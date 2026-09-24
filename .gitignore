@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+
+# datas
+data/machado/pdf/
+data/machado/txt/
+data/machado/machado.txt
