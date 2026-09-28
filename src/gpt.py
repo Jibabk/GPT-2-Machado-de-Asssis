@@ -1,12 +1,14 @@
+import json, math, os, time
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
 # hyperparameters
-batch_size = 64 # how many independent sequences will we process in parallel?
-block_size = 256 # what is the maximum context length for predictions?
+run_name = 'E1_char' # nome do arquivo em resultados/
+batch_size = 64  # how many independent sequences will we process in parallel?
+block_size = 256  # what is the maximum context length for predictions?
 max_iters = 5000
-eval_interval = 500
+eval_interval = 10
 learning_rate = 3e-4
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200
@@ -22,6 +24,7 @@ else:
     print("Using CPU")
 
 torch.manual_seed(1337)
+start_time = time.time()
 
 # wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
 with open('data/machado/machado.txt', 'r', encoding='utf-8') as f:
@@ -203,17 +206,21 @@ class GPTLanguageModel(nn.Module):
 model = GPTLanguageModel()
 m = model.to(device)
 # print the number of parameters in the model
-print(sum(p.numel() for p in m.parameters())/1e6, 'M parameters')
+n_params = sum(p.numel() for p in m.parameters())
+print(n_params/1e6, 'M parameters')
 
 # create a PyTorch optimizer
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
+history = []
+t0 = time.time()
 for iter in range(max_iters):
 
     # every once in a while evaluate the loss on train and val sets
     if iter % eval_interval == 0 or iter == max_iters - 1:
         losses = estimate_loss()
-        print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+        print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}, elapsed {time.time() - t0:.1f}s")
+        history.append({'step': iter, 'train': losses['train'].item(), 'val': losses['val'].item()})
 
     # sample a batch of data
     xb, yb = get_batch('train')
@@ -223,8 +230,27 @@ for iter in range(max_iters):
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
     optimizer.step()
+train_time = time.time() - t0
+
+# save metrics report (BPC = loss/ln2 is valid for char-level tokens only)
+val = history[-1]['val']
+config = dict(batch_size=batch_size, block_size=block_size,
+    max_iters=max_iters, learning_rate=learning_rate, n_embd=n_embd,
+    n_head=n_head, n_layer=n_layer, dropout=dropout, vocab_size=vocab_size)
+report = dict(run_name=run_name, config=config, params=n_params,
+    train_time_s=train_time, final_val_loss=val,
+    perplexity=math.exp(val), bpc=val / math.log(2), history=history)
+os.makedirs('resultados', exist_ok=True)
+json.dump(report, open(f'resultados/{run_name}.json', 'w', encoding='utf-8'), indent=2)
 
 # generate from the model
+gen_start = time.time()
 context = torch.zeros((1, 1), dtype=torch.long, device=device)
 print(decode(m.generate(context, max_new_tokens=500)[0].tolist()))
-#open('more.txt', 'w').write(decode(m.generate(context, max_new_tokens=10000)[0].tolist()))
+open('more.txt', 'w').write(decode(m.generate(context, max_new_tokens=10000)[0].tolist()))
+gen_time = time.time() - gen_start
+
+total_time = time.time() - start_time
+print(f"\ntraining time: {train_time:.2f}s")
+print(f"generation time: {gen_time:.2f}s")
+print(f"total time: {total_time:.2f}s ({total_time/60:.2f} min)")
