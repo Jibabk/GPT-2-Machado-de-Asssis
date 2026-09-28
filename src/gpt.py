@@ -16,6 +16,10 @@ n_embd = 384
 n_head = 6
 n_layer = 6
 dropout = 0.2
+# checkpoints
+out_dir = 'checkpoints'
+init_from = 'scratch' # 'scratch' or 'resume' (continua de checkpoints/{run_name}.pt)
+always_save_checkpoint = False # if True, save after every eval, not only when val loss improves
 # ------------
 
 if device == 'cuda':
@@ -212,15 +216,46 @@ print(n_params/1e6, 'M parameters')
 # create a PyTorch optimizer
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
+ckpt_path = os.path.join(out_dir, f'{run_name}.pt')
+start_iter = 0
+best_val_loss = float('inf')
 history = []
-t0 = time.time()
-for iter in range(max_iters):
+prev_train_time = 0.0
+if init_from == 'resume':
+    print(f"resuming training from {ckpt_path}")
+    checkpoint = torch.load(ckpt_path, map_location=device)
+    model.load_state_dict(checkpoint['model'])
+    optimizer.load_state_dict(checkpoint['optimizer'])
+    start_iter = checkpoint['iter']
+    best_val_loss = checkpoint['best_val_loss']
+    # drop the eval at start_iter, it will be run again
+    history = [h for h in checkpoint['history'] if h['step'] < start_iter]
+    prev_train_time = checkpoint['train_time']
+    checkpoint = None # free up memory
+
+t0 = time.time() - prev_train_time
+for iter in range(start_iter, max_iters):
 
     # every once in a while evaluate the loss on train and val sets
     if iter % eval_interval == 0 or iter == max_iters - 1:
         losses = estimate_loss()
         print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}, elapsed {time.time() - t0:.1f}s")
         history.append({'step': iter, 'train': losses['train'].item(), 'val': losses['val'].item()})
+        if losses['val'] < best_val_loss or always_save_checkpoint:
+            best_val_loss = losses['val'].item()
+            if iter > start_iter:
+                checkpoint = {
+                    'model': model.state_dict(),
+                    'optimizer': optimizer.state_dict(),
+                    'iter': iter,
+                    'best_val_loss': best_val_loss,
+                    'history': history,
+                    'train_time': time.time() - t0,
+                    'chars': chars,
+                }
+                print(f"saving checkpoint to {ckpt_path}")
+                os.makedirs(out_dir, exist_ok=True)
+                torch.save(checkpoint, ckpt_path)
 
     # sample a batch of data
     xb, yb = get_batch('train')
